@@ -13,13 +13,13 @@ const (
 	Ethernet Type = iota
 	ARCnet
 	MSTP
-	BIP
+	BVLC
 )
 
 func NewDataLink(typ Type, ifn string) (DataLink, error) {
 	switch typ {
-	case BIP:
-		return NewBIPConn(ifn)
+	case BVLC:
+		return NewBVLCConn(ifn)
 	}
 
 	return nil, errors.New("not support type")

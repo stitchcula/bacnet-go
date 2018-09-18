@@ -1,83 +1,60 @@
 package datalink
 
+// #cgo CFLAGS: -I ../bacnet-stack/include
+// #cgo windows CFLAGS: -I ../bacnet-stack/ports/win32
+// #include "datalink.h"
+// #cgo LDFLAGS: -L ../bacnet-stack/lib -lbacnet
+// #cgo windows LDFLAGS: -lws2_32 -lwsock32 -liphlpapi
+import "C"
 import (
+	"errors"
+	"fmt"
 	"net"
-	"strconv"
+	"time"
+	"unsafe"
 )
 
-const (
-	DefaultPort = 0xBAC0
-)
-
-type BIPConn struct {
-	net.PacketConn
-	laddr      *net.UDPAddr
-	broadcasts []net.IP
+type BVLCConn struct {
 }
 
-func NewBIPConn(ifn string) (c *BIPConn, err error) {
-	if net.ParseIP(ifn) != nil {
-		ifn = ifn + ":" + strconv.Itoa(DefaultPort)
-	} else if _, _, err = net.SplitHostPort(ifn); err != nil {
-		ifn = ":" + strconv.Itoa(DefaultPort)
+func NewBVLCConn(ifn string) (c *BVLCConn, err error) {
+	CIfm := C.CString(ifn)
+	defer C.free(unsafe.Pointer(CIfm))
+	if !bool(C.bip_init(CIfm)) {
+		return nil, errors.New("bip_init failed")
 	}
 
-	c = &BIPConn{}
-	c.PacketConn, err = net.ListenPacket("udp", ifn)
-	if err != nil {
-		return nil, err
-	}
+	broadcast := &C.struct_BACnet_Device_Address{}
+	C.datalink_get_broadcast_address(broadcast)
+	fmt.Println(broadcast)
 
-	c.laddr = c.PacketConn.LocalAddr().(*net.UDPAddr)
-	_, err = c.ResolveBroadcasts(c.laddr)
-	if err != nil {
-		return nil, err
-	}
-
-	return
+	return &BVLCConn{}, nil
 }
 
-func (c *BIPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	if addr == nil {
-		return c.Broadcast(p)
-	}
-	return c.PacketConn.WriteTo(p, addr)
+func (c *BVLCConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	return -1, nil, nil
 }
 
-// Broadcast write p to all c.broadcasts addresses
-// TODO: should use default port of laddr?
-func (c *BIPConn) Broadcast(p []byte) (n int, err error) {
-	for i := range c.broadcasts {
-		n, err = c.PacketConn.WriteTo(p, &net.UDPAddr{
-			IP:   c.broadcasts[i],
-			Port: c.laddr.Port,
-		})
-		if err != nil {
-			break
-		}
-	}
-
-	return
+func (c *BVLCConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	return -1, nil
 }
 
-// ResolveBroadcasts resolve the broadcast IPs to c.broadcasts
-func (c *BIPConn) ResolveBroadcasts(laddr *net.UDPAddr) (addrs []net.IP, err error) {
-	uni, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	for i := range uni {
-		ip, msk, err := net.ParseCIDR(uni[i].String())
-		// TODO: ipv4 only?
-		if err != nil || ip.To4() == nil || (!laddr.IP.IsUnspecified() && !laddr.IP.Equal(ip)) {
-			continue
-		}
-		broadcast := net.IP(make([]byte, 4))
-		for i := range broadcast {
-			broadcast[i] = msk.IP[i] | ^msk.Mask[i]
-		}
-		c.broadcasts = append(c.broadcasts, broadcast)
-	}
+func (c *BVLCConn) Close() error {
+	return nil
+}
 
-	return c.broadcasts, nil
+func (c *BVLCConn) LocalAddr() net.Addr {
+	return nil
+}
+
+func (c *BVLCConn) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *BVLCConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (c *BVLCConn) SetWriteDeadline(t time.Time) error {
+	return nil
 }
