@@ -1,8 +1,17 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"net"
+)
 
 func main() {
-	var a byte = 200
-	fmt.Println(a)
+	uni, _ := net.InterfaceAddrs()
+	for i := range uni {
+		ip, _, err := net.ParseCIDR(uni[i].String())
+		if err != nil || ip.IsUnspecified() || ip.IsLoopback() || ip.To4() == nil {
+			continue
+		}
+		fmt.Println(ip)
+	}
 }

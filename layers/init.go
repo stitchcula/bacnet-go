@@ -17,3 +17,15 @@ var (
 		return "BACnetVLC"
 	}})
 )
+
+// setByteMask takes an input in, and make a bit either 0, or 1 depending on the
+// input boolean and mask
+func SetByteMask(in byte, b bool, mask byte) byte {
+	if b {
+		return in | mask
+	} else {
+		var m byte = 0xFF
+		m = m - mask
+		return in & m
+	}
+}
