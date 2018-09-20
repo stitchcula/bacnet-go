@@ -1,6 +1,8 @@
 package datalink
 
 import (
+	"github.com/google/gopacket"
+	"github.com/stitchcula/bacnet-go/layers"
 	"net"
 	"strconv"
 )
@@ -41,7 +43,19 @@ func (c *BIPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if addr == nil {
 		return c.Broadcast(p)
 	}
-	return c.PacketConn.WriteTo(p, addr)
+
+	buf := gopacket.NewSerializeBuffer()
+	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{},
+		&layers.BVLC{},
+		&layers.NPDU{},
+		gopacket.Payload(p),
+	)
+
+	return c.PacketConn.WriteTo(buf.Bytes(), addr)
+}
+
+func (c *BIPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	return c.PacketConn.ReadFrom(p)
 }
 
 // Broadcast write p to all c.broadcasts addresses
