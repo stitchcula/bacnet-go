@@ -2,7 +2,14 @@ package bacnet
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
+)
+
+const BroadcastNetwork uint16 = 0xFFFF
+
+var (
+	BroadcastAddr = &Addr{}
 )
 
 type Addr struct {
@@ -13,22 +20,50 @@ type Addr struct {
 	Adr    [7]byte
 }
 
-func NewAddrUDP() *Addr {
-	return &Addr{}
-}
-
-func NewAddrBytes(data []byte) *Addr {
-	addr := &Addr{}
-	addr.DecodeFromBytes(data)
-	return addr
-}
-
 func (addr *Addr) Network() string {
 	return "BACnet"
 }
 
 func (addr *Addr) String() string {
-	return net.IP(addr.Mac[:4]).String()
+	return fmt.Sprintf("%x", addr.Adr[:])
+}
+
+func (addr *Addr) IsBroadcast() bool {
+	if addr.Net == BroadcastNetwork || addr.MacLen == 0 {
+		return true
+	}
+	return false
+}
+
+func (addr *Addr) SetBroadcast(b bool) {
+	if b {
+		addr.MacLen = 0
+	} else {
+		addr.MacLen = uint8(len(addr.Mac))
+	}
+}
+
+func (addr *Addr) IsSubBroadcast() bool {
+	if addr.Net > 0 && addr.Len == 0 {
+		return true
+	}
+	return false
+}
+
+func (addr *Addr) IsUnicast() bool {
+	if addr.MacLen == 6 {
+		return true
+	}
+	return false
+}
+
+func (addr *Addr) UDPAddr() *net.UDPAddr {
+	port := uint(addr.Mac[4])<<8 | uint(addr.Mac[5])
+
+	return &net.UDPAddr{
+		IP:   net.IP(addr.Mac[:4]),
+		Port: int(port),
+	}
 }
 
 func (addr *Addr) DecodeFromBytes(data []byte) (offset int) {

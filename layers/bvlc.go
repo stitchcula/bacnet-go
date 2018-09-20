@@ -11,7 +11,7 @@ type BVLCFunction byte
 
 const (
 	BVLCResult BVLCFunction = iota
-	BVLCWriteBroadcastDistributionTable
+	BVLCWriteBroadcastDistTable
 	BVLCReadBroadcastDistTable
 	BVLCReadBroadcastDistTableAck
 	BVLCForwardedNPDU
@@ -45,7 +45,7 @@ func (vlc *BVLC) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serialize
 	}
 	vlc.length = uint16(4 + len(b.Bytes()))
 
-	bytes[0] = vlc.Type
+	bytes[0] = BVLCTypeBIP // vlc.Type
 	bytes[1] = byte(vlc.Function)
 	binary.BigEndian.PutUint16(bytes[2:], vlc.length)
 
@@ -54,11 +54,14 @@ func (vlc *BVLC) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serialize
 
 func (vlc *BVLC) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	vlc.Type = data[0]
+	if vlc.Type != BVLCTypeBIP {
+		return fmt.Errorf("invalid BVLC.Type %d of %d", BVLCTypeBIP, vlc.Type)
+	}
 	vlc.Function = BVLCFunction(data[1])
 	vlc.length = binary.BigEndian.Uint16(data[2:4])
 
 	if len(data) != int(vlc.length) {
-		return fmt.Errorf("invalid BVLC length %d of %d", vlc.length, len(data))
+		return fmt.Errorf("invalid BVLC.length %d of %d", vlc.length, len(data))
 	}
 	vlc.Contents = data[:4]
 	vlc.Payload = data[4:]

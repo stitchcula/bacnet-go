@@ -2,6 +2,8 @@ package layers
 
 import "github.com/google/gopacket"
 
+const ()
+
 var (
 	// LayerTypeBACnetLPDU = gopacket.RegisterLayerType(1233, gopacket.LayerTypeMetadata{Name: "BACnetLPDU", Decoder: gopacket.DecodeFunc(decodeBACnetLPDU)})
 	LayerTypeBACnetNPDU = gopacket.RegisterLayerType(1234, gopacket.LayerTypeMetadata{Name: "BACnetNPDU", Decoder: gopacket.DecodeFunc(decodeBACnetNPDU)})

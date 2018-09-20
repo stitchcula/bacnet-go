@@ -7,6 +7,10 @@ import (
 	"github.com/stitchcula/bacnet-go"
 )
 
+const NPDUProtocolVersion uint8 = 1
+
+const NPDUDefaultHopCount uint8 = 255
+
 type NPDUPriority byte
 
 const (
@@ -33,7 +37,7 @@ func (f NPDUFlag) IsNetworkLayerMessage() bool {
 	return f&NPDUMaskNetworkLayerMessage > 0
 }
 
-func (f *NPDUFlag) setDst(b bool) {
+func (f *NPDUFlag) SetDst(b bool) {
 	*f = NPDUFlag(SetByteMask(byte(*f), b, byte(NPDUMaskDst)))
 }
 
@@ -41,7 +45,7 @@ func (f NPDUFlag) HasDst() bool {
 	return f&NPDUMaskDst > 0
 }
 
-func (f *NPDUFlag) setSrc(b bool) {
+func (f *NPDUFlag) SetSrc(b bool) {
 	*f = NPDUFlag(SetByteMask(byte(*f), b, byte(NPDUMaskSrc)))
 }
 
@@ -67,13 +71,17 @@ func (f NPDUFlag) Priority() NPDUPriority {
 
 type NPDU struct {
 	layers.BaseLayer
-
 	ProtocolVersion byte
-	Flags           NPDUFlag
-	Dst, Src        *bacnet.Addr
-	HopCount        byte
-	MessageType     byte
-	VendorID        bacnet.VendorID
+
+	IsNetworkLayerMessage bool
+	ExpectingReply        bool
+	Priority              NPDUPriority
+	flags                 NPDUFlag
+
+	Dst, Src    *bacnet.Addr
+	HopCount    byte
+	MessageType byte
+	VendorID    bacnet.VendorID
 }
 
 func (npdu *NPDU) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOptions) error {
@@ -83,8 +91,12 @@ func (npdu *NPDU) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serializ
 	}
 	bytes[0] = npdu.ProtocolVersion
 
+	npdu.flags.SetNetworkLayerMessage(npdu.IsNetworkLayerMessage)
+	npdu.flags.SetExpectingReply(npdu.ExpectingReply)
+	npdu.flags.SetPriority(npdu.Priority)
+
 	if npdu.Dst != nil || npdu.Dst.Net != 0 {
-		npdu.Flags.setDst(true)
+		npdu.flags.SetDst(true)
 
 		raddr := npdu.Dst.Bytes()
 		dst, err := b.PrependBytes(len(raddr))
@@ -95,7 +107,7 @@ func (npdu *NPDU) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serializ
 	}
 
 	if npdu.Src != nil || npdu.Src.Net != 0 {
-		npdu.Flags.setSrc(true)
+		npdu.flags.SetSrc(true)
 
 		laddr := npdu.Src.Bytes()
 		src, err := b.PrependBytes(len(laddr))
@@ -105,9 +117,9 @@ func (npdu *NPDU) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serializ
 		copy(src, laddr)
 	}
 
-	bytes[1] = byte(npdu.Flags)
+	bytes[1] = byte(npdu.flags)
 
-	if npdu.Flags.HasDst() {
+	if npdu.flags.HasDst() {
 		bytes, err = b.PrependBytes(1)
 		if err != nil {
 			return err
@@ -115,7 +127,7 @@ func (npdu *NPDU) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serializ
 		bytes[0] = npdu.HopCount
 	}
 
-	if npdu.Flags.IsNetworkLayerMessage() {
+	if npdu.flags.IsNetworkLayerMessage() {
 		bytes, err = b.PrependBytes(1)
 		if err != nil {
 			return err
@@ -135,27 +147,31 @@ func (npdu *NPDU) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serializ
 
 func (npdu *NPDU) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	npdu.ProtocolVersion = data[0]
-	npdu.Flags = NPDUFlag(data[1])
+	npdu.flags = NPDUFlag(data[1])
+
+	npdu.IsNetworkLayerMessage = npdu.flags.IsNetworkLayerMessage()
+	npdu.ExpectingReply = npdu.flags.ExpectingReply()
+	npdu.Priority = npdu.flags.Priority()
 
 	sk := 2
-	if npdu.Flags.HasDst() {
+	if npdu.flags.HasDst() {
 		npdu.Dst = &bacnet.Addr{}
 		sk += npdu.Dst.DecodeFromBytes(data[sk:])
 	}
 
-	if npdu.Flags.HasSrc() {
+	if npdu.flags.HasSrc() {
 		npdu.Src = &bacnet.Addr{}
 		sk += npdu.Src.DecodeFromBytes(data[sk:])
 	}
 
-	if npdu.Flags.HasDst() {
+	if npdu.flags.HasDst() {
 		npdu.HopCount = data[sk]
 		sk++
 	} else {
 		npdu.HopCount = 0
 	}
 
-	if npdu.Flags.IsNetworkLayerMessage() {
+	if npdu.flags.IsNetworkLayerMessage() {
 		npdu.MessageType = data[sk]
 		sk++
 		if npdu.MessageType > 0x80 {

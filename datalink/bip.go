@@ -1,61 +1,127 @@
 package datalink
 
 import (
+	"encoding/binary"
 	"fmt"
 	"github.com/google/gopacket"
+	"github.com/stitchcula/bacnet-go"
 	"github.com/stitchcula/bacnet-go/layers"
 	"net"
-	"strconv"
-	"time"
+	"syscall"
 )
 
 const (
-	DefaultPort = 0xBAC0
+	BIPMaxAPDU     = 1476
+	BIPMaxNPDU     = 1 + 1 + 2 + 1 + 7 + 2 + 1 + 7 + 1 + 1 + 2
+	BIPMaxPDU      = BIPMaxAPDU + BIPMaxNPDU
+	BIPMaxMPDU     = 1 + 1 + 2 + BIPMaxPDU
+	BIPDefaultPort = 0xBAC0
 )
 
-type singleBIPConn struct {
+type BIPConn struct {
 	net.PacketConn
 	msk       *net.IPNet
-	laddr     *net.UDPAddr
-	broadcast net.IP
+	laddr     *bacnet.Addr
+	broadcast *bacnet.Addr
 }
 
-func newSingleBIPConn(ifn string) (c *singleBIPConn, err error) {
-	c = &singleBIPConn{}
+func NewBIPConn(ifn string) (c *BIPConn, err error) {
+	h, _, err := net.SplitHostPort(ifn)
+	if err != nil {
+		return nil, err
+	}
+	ip := net.ParseIP(h)
+	if ip == nil || ip.To4() == nil || ip.IsUnspecified() {
+		return nil, fmt.Errorf("invalid IPv4 %s", h)
+	}
+
+	c = &BIPConn{}
 	c.PacketConn, err = net.ListenPacket("udp", ifn)
 	if err != nil {
 		return nil, err
 	}
 
-	c.laddr = c.PacketConn.LocalAddr().(*net.UDPAddr)
-	if err = c.resolveBroadcast(c.laddr); err != nil {
+	laddr := c.PacketConn.LocalAddr().(*net.UDPAddr)
+	c.laddr = bacnet.ResolveUDPAddr(laddr)
+
+	if err = c.resolveBroadcast(laddr); err != nil {
 		return nil, err
 	}
 
 	return c, nil
 }
 
-func (c *singleBIPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	if addr == nil {
-		return c.Broadcast(p)
+func (c *BIPConn) WriteTo(apdu []byte, addr net.Addr) (n int, err error) {
+	dst, ok := addr.(*bacnet.Addr)
+	if !ok {
+		return 0, &net.OpError{Op: "write", Net: addr.Network(), Source: c.laddr, Addr: addr, Err: syscall.EINVAL}
+	}
+	if dst == bacnet.BroadcastAddr {
+		dst = c.broadcast
+	}
+
+	// link layer
+	vlc := &layers.BVLC{
+		Type: layers.BVLCTypeBIP,
+	}
+	if dst.IsBroadcast() || dst.IsSubBroadcast() {
+		vlc.Function = layers.BVLCOriginalBroadcastNPDU
+	} else {
+		vlc.Function = layers.BVLCOriginalUnicastNPDU
+	}
+
+	// network layer
+	npdu := &layers.NPDU{
+		ProtocolVersion:       layers.NPDUProtocolVersion,
+		Dst:                   dst,
+		Src:                   c.laddr,
+		IsNetworkLayerMessage: false,
+		ExpectingReply:        false,
+		Priority:              layers.NPDUPriorityNormal,
+		HopCount:              layers.NPDUDefaultHopCount,
 	}
 
 	buf := gopacket.NewSerializeBuffer()
 	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{},
-		&layers.BVLC{},
-		&layers.NPDU{},
-		gopacket.Payload(p),
+		vlc,
+		npdu,
+		gopacket.Payload(apdu),
 	)
 
-	return c.PacketConn.WriteTo(buf.Bytes(), addr)
+	return c.PacketConn.WriteTo(buf.Bytes(), dst.UDPAddr())
 }
 
-func (c *singleBIPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	return c.PacketConn.ReadFrom(p)
+func (c *BIPConn) ReadFrom(apdu []byte) (n int, addr net.Addr, err error) {
+	data := make([]byte, 0, BIPMaxMPDU)
+	for {
+		n, addr, err = c.PacketConn.ReadFrom(data)
+		if err != nil {
+			return
+		}
+
+		packet := gopacket.NewPacket(data, layers.LayerTypeBACnetVLC, gopacket.Default)
+		layer := packet.Layer(layers.LayerTypeBACnetVLC)
+		if layer == nil {
+			continue
+		}
+		vlc, _ := layer.(*layers.BVLC)
+		switch vlc.Function {
+		case layers.BVLCResult:
+			fmt.Printf("BVLC: Result Code=%d\r\n", binary.BigEndian.Uint16(vlc.LayerPayload()))
+		case layers.BVLCWriteBroadcastDistTable:
+			fmt.Println("BVLC: layers.BVLCWriteBroadcastDistributionTable")
+		case layers.BVLCReadBroadcastDistTable:
+			fmt.Println("BVLC: layers.BVLCReadBroadcastDistTable")
+		case layers.BVLCReadBroadcastDistTableAck:
+			fmt.Println("BVLC: layers.BVLCReadBroadcastDistTableAck")
+		case layers.BVLCForwardedNPDU:
+
+		}
+	}
 }
 
 // resolveBroadcast resolve the broadcast IP to c.broadcast
-func (c *singleBIPConn) resolveBroadcast(laddr *net.UDPAddr) error {
+func (c *BIPConn) resolveBroadcast(laddr *net.UDPAddr) error {
 	uni, err := net.InterfaceAddrs()
 	if err != nil {
 		return err
@@ -66,10 +132,15 @@ func (c *singleBIPConn) resolveBroadcast(laddr *net.UDPAddr) error {
 			continue
 		}
 		c.msk = msk
-		c.broadcast = net.IP(make([]byte, 4))
-		for i := range c.broadcast {
-			c.broadcast[i] = msk.IP[i] | ^msk.Mask[i]
+		broadcast := net.IP(make([]byte, 4))
+		for i := range broadcast {
+			broadcast[i] = msk.IP[i] | ^msk.Mask[i]
 		}
+		c.broadcast = bacnet.ResolveUDPAddr(&net.UDPAddr{
+			IP:   broadcast,
+			Port: BIPDefaultPort,
+		})
+		c.broadcast.SetBroadcast(true)
 	}
 
 	if c.broadcast == nil {
@@ -77,100 +148,4 @@ func (c *singleBIPConn) resolveBroadcast(laddr *net.UDPAddr) error {
 	}
 
 	return nil
-}
-
-type BIPConn struct {
-	laddr net.Addr
-	conns []*singleBIPConn
-}
-
-func NewBIPConn(ifn string) (*BIPConn, error) {
-	h, port, err := net.SplitHostPort(ifn)
-	if err != nil {
-		return nil, err
-	}
-	ip := net.ParseIP(h)
-	if ip == nil || ip.To4() == nil {
-		return nil, fmt.Errorf("invalid IPv4 %s", h)
-	}
-
-	laddr, _ := net.ResolveUDPAddr("udp", ifn)
-	c := &BIPConn{laddr: laddr}
-
-	if !ip.IsUnspecified() {
-		sc, err := newSingleBIPConn(ifn)
-		if err != nil {
-			return nil, err
-		}
-		c.conns = append(c.conns, sc)
-		return c, nil
-	}
-
-	uni, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	for i := range uni {
-		ip, _, err := net.ParseCIDR(uni[i].String())
-		if err != nil || ip.IsUnspecified() || ip.IsLoopback() || ip.To4() == nil {
-			continue
-		}
-
-		sc, err := newSingleBIPConn(net.JoinHostPort(ip.String(), port))
-		if err != nil {
-			return nil, err
-		}
-		c.conns = append(c.conns, sc)
-	}
-
-	return c, nil
-}
-
-func (c *BIPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	return
-}
-
-func (c *BIPConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	// TODO: read from channel
-	return
-}
-
-func (c *BIPConn) Close() (err error) {
-	for i := range c.conns {
-		if er := c.conns[i].Close(); er != nil {
-			err = er
-		}
-	}
-	return err
-}
-
-func (c *BIPConn) LocalAddr() net.Addr {
-	return c.laddr
-}
-
-func (c *BIPConn) SetDeadline(t time.Time) (err error) {
-	for i := range c.conns {
-		if er := c.conns[i].SetDeadline(t); er != nil {
-			err = er
-		}
-	}
-	return err
-}
-
-func (c *BIPConn) SetReadDeadline(t time.Time) (err error) {
-	for i := range c.conns {
-		if er := c.conns[i].SetReadDeadline(t); er != nil {
-			err = er
-		}
-	}
-	return err
-}
-
-func (c *BIPConn) SetWriteDeadline(t time.Time) (err error) {
-	for i := range c.conns {
-		if er := c.conns[i].SetWriteDeadline(t); er != nil {
-			err = er
-		}
-	}
-	return err
 }
