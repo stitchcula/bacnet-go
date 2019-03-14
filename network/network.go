@@ -1,7 +1,6 @@
 package network
 
 import (
-	"encoding/binary"
 	"fmt"
 	"github.com/google/gopacket"
 	"github.com/stitchcula/bacnet-go"
@@ -9,23 +8,19 @@ import (
 	"github.com/stitchcula/bacnet-go/layers"
 	"net"
 	"syscall"
-	"unicode"
 )
 
-const (
-	BIPMaxAPDU     = 1476
-	BIPMaxNPDU     = 1 + 1 + 2 + 1 + 7 + 2 + 1 + 7 + 1 + 1 + 2
-	BIPMaxPDU      = BIPMaxAPDU + BIPMaxNPDU
-	BIPMaxMPDU     = 1 + 1 + 2 + BIPMaxPDU
-	BIPDefaultPort = 0xBAC0
-)
+type frame struct {
+	addr    net.Addr
+	payload []byte
+}
 
 type Network struct {
 	datalink.DataLink
 
 	done   chan struct{}
-	recvCh chan struct{}
-	sendCh chan struct{}
+	recvCh chan frame
+	errCh  chan error
 }
 
 func ListenPacket(typ datalink.Type, ifn string) (net.PacketConn, error) {
@@ -37,96 +32,75 @@ func ListenPacket(typ datalink.Type, ifn string) (net.PacketConn, error) {
 	c := &Network{
 		DataLink: dl,
 		done:     make(chan struct{}),
-		recvCh:   make(chan struct{}),
-		sendCh:   make(chan struct{}),
+		recvCh:   make(chan frame),
+		errCh:    make(chan error),
 	}
 
-	go c.sendLoop()
 	go c.recvLoop()
 
 	return c, nil
 }
 
-func (c *Network) sendLoop() {
-
-}
-
 func (c *Network) recvLoop() {
+	data := make([]byte, 0, layers.MaxAPDU)
 	for {
 		select {
 		case <-c.done:
 			return
-		case bf, ok:=<-c.recvCh:
-
+		default:
 		}
+
+		n, addr, err := c.DataLink.ReadFrom(data)
+		if err != nil {
+			c.errCh <- err
+			continue
+		}
+
+		fmt.Println(data[0:n], addr)
 	}
 }
 
 func (c *Network) WriteTo(apdu []byte, addr net.Addr) (n int, err error) {
 	dst, ok := addr.(*bacnet.Addr)
 	if !ok {
-		return 0, &net.OpError{Op: "write", Net: addr.Network(), Source:, Addr: addr, Err: syscall.EINVAL}
-	}
-	if dst == bacnet.BroadcastAddr {
-		dst = c.broadcast
+		return 0, &net.OpError{Op: "write", Net: addr.Network(), Source: c.DataLink.LocalAddr(), Addr: addr, Err: syscall.EINVAL}
 	}
 
-	// link layer
-	vlc := &layers.BVLC{
-		Type: layers.BVLCTypeBIP,
-	}
-	if dst.IsBroadcast() || dst.IsSubBroadcast() {
-		vlc.Function = layers.BVLCOriginalBroadcastNPDU
-	} else {
-		vlc.Function = layers.BVLCOriginalUnicastNPDU
-	}
-
-	// network layer
 	npdu := &layers.NPDU{
-		ProtocolVersion: layers.NPDUProtocolVersion,
-		Dst:             dst,
-		Src:             c.laddr,
+		ProtocolVersion:       layers.NPDUProtocolVersion,
+		Dst:                   dst,
+		Src:                   nil,
 		IsNetworkLayerMessage: false,
 		ExpectingReply:        false,
 		Priority:              layers.NPDUPriorityNormal,
 		HopCount:              layers.NPDUDefaultHopCount,
 	}
 
-	buf := gopacket.NewSerializeBuffer()
-	gopacket.SerializeLayers(buf, gopacket.SerializeOptions{},
-		vlc,
+	bf := gopacket.NewSerializeBuffer()
+	gopacket.SerializeLayers(bf, gopacket.SerializeOptions{},
 		npdu,
 		gopacket.Payload(apdu),
 	)
 
-	return c.PacketConn.WriteTo(buf.Bytes(), dst.UDPAddr())
+	return c.DataLink.WriteTo(bf.Bytes(), addr)
 }
 
 func (c *Network) ReadFrom(apdu []byte) (n int, addr net.Addr, err error) {
-	data := make([]byte, 0, BIPMaxMPDU)
-	for {
-		n, addr, err = c.PacketConn.ReadFrom(data)
-		if err != nil {
-			return
-		}
-
-		packet := gopacket.NewPacket(data, layers.LayerTypeBACnetVLC, gopacket.Default)
-		layer := packet.Layer(layers.LayerTypeBACnetVLC)
-		if layer == nil {
-			continue
-		}
-		vlc, _ := layer.(*layers.BVLC)
-		switch vlc.Function {
-		case layers.BVLCResult:
-			fmt.Printf("BVLC: Result Code=%d\r\n", binary.BigEndian.Uint16(vlc.LayerPayload()))
-		case layers.BVLCWriteBroadcastDistTable:
-			fmt.Println("BVLC: layers.BVLCWriteBroadcastDistributionTable")
-		case layers.BVLCReadBroadcastDistTable:
-			fmt.Println("BVLC: layers.BVLCReadBroadcastDistTable")
-		case layers.BVLCReadBroadcastDistTableAck:
-			fmt.Println("BVLC: layers.BVLCReadBroadcastDistTableAck")
-		case layers.BVLCForwardedNPDU:
-
-		}
+	select {
+	case <-c.done:
+		return -1, nil, &net.OpError{Op: "read", Net: addr.Network(), Source: c.DataLink.LocalAddr(), Addr: addr, Err: syscall.EPIPE}
+	case err := <-c.errCh:
+		return -1, nil, err
+	case fr := <-c.recvCh:
+		copy(apdu, fr.payload)
+		return len(fr.payload), fr.addr, nil
 	}
+}
+
+func (c *Network) Close() error {
+	close(c.done)
+	err := c.DataLink.Close()
+	close(c.recvCh)
+	close(c.errCh)
+	return err
 }

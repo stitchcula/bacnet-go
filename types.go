@@ -9,15 +9,16 @@ import (
 const BroadcastNetwork uint16 = 0xFFFF
 
 var (
-	BroadcastAddr = &Addr{}
+	BroadcastAddr = &Addr{Net: BroadcastNetwork}
+	NilAddr       = &Addr{}
 )
 
 type Addr struct {
-	MacLen byte
-	Mac    [7]byte
 	Net    uint16
 	Len    byte
-	Adr    [7]byte
+	Adr    [7]byte // sub net
+	MacLen byte
+	Mac    [7]byte // ip in B/IP
 }
 
 func (addr *Addr) Network() string {

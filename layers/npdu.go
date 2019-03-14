@@ -85,62 +85,45 @@ type NPDU struct {
 }
 
 func (npdu *NPDU) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOptions) error {
-	bytes, err := b.PrependBytes(2)
-	if err != nil {
-		return err
-	}
-	bytes[0] = npdu.ProtocolVersion
+	byt := make([]byte, 2, MaxNPDU)
+	byt[0] = npdu.ProtocolVersion
 
 	npdu.flags.SetNetworkLayerMessage(npdu.IsNetworkLayerMessage)
 	npdu.flags.SetExpectingReply(npdu.ExpectingReply)
 	npdu.flags.SetPriority(npdu.Priority)
 
-	if npdu.Dst != nil || npdu.Dst.Net != 0 {
+	if npdu.Dst != nil && npdu.Dst.Net != 0 {
 		npdu.flags.SetDst(true)
 
 		raddr := npdu.Dst.Bytes()
-		dst, err := b.PrependBytes(len(raddr))
-		if err != nil {
-			return err
-		}
-		copy(dst, raddr)
+		byt = append(byt, raddr...)
 	}
 
-	if npdu.Src != nil || npdu.Src.Net != 0 {
+	if npdu.Src != nil && npdu.Src.Net != 0 {
 		npdu.flags.SetSrc(true)
 
 		laddr := npdu.Src.Bytes()
-		src, err := b.PrependBytes(len(laddr))
-		if err != nil {
-			return err
-		}
-		copy(src, laddr)
+		byt = append(byt, laddr...)
 	}
 
-	bytes[1] = byte(npdu.flags)
+	byt[1] = byte(npdu.flags)
 
 	if npdu.flags.HasDst() {
-		bytes, err = b.PrependBytes(1)
-		if err != nil {
-			return err
-		}
-		bytes[0] = npdu.HopCount
+		byt = append(byt, npdu.HopCount)
 	}
 
 	if npdu.flags.IsNetworkLayerMessage() {
-		bytes, err = b.PrependBytes(1)
-		if err != nil {
-			return err
-		}
-		bytes[0] = npdu.MessageType
+		byt = append(byt, npdu.MessageType)
 		if npdu.MessageType > 0x80 {
-			bytes, err = b.PrependBytes(2)
-			if err != nil {
-				return err
-			}
-			binary.BigEndian.PutUint16(bytes, uint16(npdu.VendorID))
+			byt = append(byt, byte(npdu.VendorID>>8), byte(npdu.VendorID))
 		}
 	}
+
+	dst, err := b.PrependBytes(len(byt))
+	if err != nil {
+		return err
+	}
+	copy(dst, byt)
 
 	return nil
 }

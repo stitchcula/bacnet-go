@@ -19,7 +19,7 @@ const (
 func NewDataLink(typ Type, ifn string) (DataLink, error) {
 	switch typ {
 	case BIP:
-		return NewBIPConn(ifn)
+		return ListenBIP(ifn)
 	}
 
 	return nil, errors.New("not support type")

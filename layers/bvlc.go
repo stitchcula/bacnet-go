@@ -43,7 +43,7 @@ func (vlc *BVLC) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.Serialize
 	if err != nil {
 		return err
 	}
-	vlc.length = uint16(4 + len(b.Bytes()))
+	vlc.length = uint16(len(b.Bytes()))
 
 	bytes[0] = BVLCTypeBIP // vlc.Type
 	bytes[1] = byte(vlc.Function)

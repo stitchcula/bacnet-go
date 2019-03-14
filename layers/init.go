@@ -2,7 +2,11 @@ package layers
 
 import "github.com/google/gopacket"
 
-const ()
+const (
+	MaxAPDU = 1476
+	MaxNPDU = 1 + 1 + 2 + 1 + 7 + 2 + 1 + 7 + 1 + 1 + 2
+	MaxPDU  = MaxAPDU + MaxNPDU
+)
 
 var (
 	// LayerTypeBACnetLPDU = gopacket.RegisterLayerType(1233, gopacket.LayerTypeMetadata{Name: "BACnetLPDU", Decoder: gopacket.DecodeFunc(decodeBACnetLPDU)})
